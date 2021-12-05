@@ -14,10 +14,13 @@ def shift(T, t0, x0, u, x_n, f):
     return t, st, u_end, x_n
 
 def predict_state(x0, u, T, N):
+    bias = float(np.random.normal(0, 5, 1))
+    # bias = 0
+    
     # Parameter
     d = 0.2
     M = 10; J = 2
-    Bx = 0.05; By = 0.05; Bw = 0.06
+    Bx = 0.5; By = 0.5; Bw = 0.6
     # Cx = 0.5; Cy = 0.5; Cw = 0.6
     # define prediction horizon function
     states = np.zeros((N+1, 6))
@@ -27,13 +30,14 @@ def predict_state(x0, u, T, N):
         states[i+1, 0] = states[i, 0] + (states[i, 3]*np.cos(states[i, 2]) - states[i, 4]*np.sin(states[i, 2]))*T
         states[i+1, 1] = states[i, 1] + (states[i, 3]*np.sin(states[i, 2]) + states[i, 4]*np.cos(states[i, 2]))*T
         states[i+1, 2] = states[i, 2] + states[i, 5]*T
-        states[i+1, 3] = (0*u[i, 0] + np.sqrt(3)/2*u[i, 1] - np.sqrt(3)/2*u[i, 2] - Bx*states[3])/M
-        states[i+1, 4] = (-1*u[i, 0] + 1/2*u[i, 1] + 1/2*u[i, 2] - By*states[4])/M
-        states[i+1, 5] = (d*u[i, 0] + d*u[i, 1] + d*u[i, 2] - Bw*states[5])/J
+        states[i+1, 3] = (0*(u[i, 0]+bias) + np.sqrt(3)/2*(u[i, 1]+bias) - np.sqrt(3)/2*(u[i, 2]+bias) - Bx*states[3])/M
+        states[i+1, 4] = (-1*(u[i, 0]+bias) + 1/2*(u[i, 1]+bias) + 1/2*(u[i, 2]+bias) - By*states[4])/M
+        states[i+1, 5] = (d*(u[i, 0]+bias) + d*(u[i, 1]+bias) + d*(u[i, 2]+bias) - Bw*states[5])/J
     return states
 
 
 def desired_command_and_trajectory(t, T, x0_:np.array, N_):
+    Bx = 0.5; By = 0.5; Bw = 0.6
     # initial state / last state
     x_ = np.zeros((N_+1, 6))
     x_[0] = x0_
@@ -56,7 +60,11 @@ def desired_command_and_trajectory(t, T, x0_:np.array, N_):
         omega_ref_ = dotq_ref_
 
         x_[i+1] = np.array([x_ref_, y_ref_, theta_ref_, vx_ref_, vy_ref_, omega_ref_])
-        u_[i] = np.array([0.05*vx_ref_, 0.05*vy_ref_, 0.06*omega_ref_])
+
+        u1_ref_ = 0*Bx*vx_ref_ - 2/3*By*vy_ref_ + 2/3*Bw*omega_ref_
+        u2_ref_ = math.sqrt(3)/3*Bx*vx_ref_ + 1/3*By*vy_ref_ + 2/3*Bw*omega_ref_
+        u3_ref_ = -math.sqrt(3)/3*Bx*vx_ref_ + 1/3*By*vy_ref_ + 2/3*Bw*omega_ref_
+        u_[i] = np.array([u1_ref_, u2_ref_, u3_ref_])
     # return pose and command
     return x_, u_
 
@@ -64,15 +72,15 @@ if __name__ == "__main__":
     # Parameter
     d = 0.2
     M = 10; J = 2
-    Bx = 0.05; By = 0.05; Bw = 0.06
+    Bx = 0.5; By = 0.5; Bw = 0.6
     Cx = 0.5; Cy = 0.5; Cw = 0.6
 
     T = 0.1                 # time step
-    N = 50                  # horizon length
+    N = 30                  # horizon length
     rob_diam = 0.3          # [m]
     v_max = 3.0             # linear velocity max
     omega_max = np.pi/3.0   # angular velocity max
-    u_max = 10              # force max of each direction
+    u_max = 8               # force max of each direction
 
     opti = ca.Opti()
     # control variables, toruqe of each wheel
@@ -118,7 +126,7 @@ if __name__ == "__main__":
         opti.subject_to(opt_states[i+1, :] == x_next)
 
     # weight matrix
-    Q = np.diag([30.0, 30.0, 5.0])
+    Q = np.diag([30.0, 30.0, 10.0, 10.0, 10.0, 1.0])
     R = np.diag([1.0, 1.0, 1.0])
 
     # cost function
@@ -126,8 +134,8 @@ if __name__ == "__main__":
     for i in range(N):
         state_error_ = opt_states[i, :] - opt_x_ref[i+1, :]
         control_error_ = opt_controls[i, :] - opt_u_ref[i, :]
-        obj = obj + ca.mtimes([state_error_[:3], Q, state_error_[:3].T]) \
-                    + ca.mtimes([opt_controls[i, :], R, opt_controls[i, :].T])
+        obj = obj + ca.mtimes([state_error_, Q, state_error_.T]) \
+                    + ca.mtimes([control_error_, R, control_error_.T])
     opti.minimize(obj)
 
     # Lyapunov NMPC - SMC constraints
@@ -183,7 +191,7 @@ if __name__ == "__main__":
     x_c = [] # contains for the history of the state
     u_c = []
     t_c = [t0] # for the time
-    xx = []
+    xx = [current_state]
     sim_time = 12.0
 
     ## start MPC
@@ -209,7 +217,7 @@ if __name__ == "__main__":
         t_c.append(t0)
         x_c.append(x_m)
         t0, current_state, u0, next_states = shift(T, t0, current_state, u_res, x_m, f_np)
-        xx.append(current_state)
+        xx.append(np.array(current_state))
         ## estimate the new desired trajectories and controls
         next_trajectories, next_controls = desired_command_and_trajectory(t0, T, current_state, N)
         mpciter = mpciter + 1
@@ -224,3 +232,8 @@ if __name__ == "__main__":
     draw_result = Draw_MPC_tracking(rob_diam=0.3,
                                     init_state=init_state,
                                     robot_states=np.array(xx))
+    # with open('lnmpc.npy', 'wb') as f:
+    #     np.save(f, xx)
+
+    import scipy.io
+    scipy.io.savemat('lnmpc_noise.mat', dict(xx=xx))
